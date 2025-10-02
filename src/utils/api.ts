@@ -272,8 +272,7 @@ const extractImageFromResponse = async (
 ): Promise<{ base64: string; mimeType: string; meta: ImageResponseMeta }> => {
   const message = data.choices?.[0]?.message;
   
-  // Debug logging (remove after fixing)
-  console.log('Full message structure:', JSON.stringify(message, null, 2));
+
   
   const images = message?.images;
   let imageUrl = normalizeImageUrl(images?.[0]);
@@ -374,9 +373,9 @@ const requestImageEdit = async (
   apiKey: string,
   resultType: Extract<GenerationType, 'scene-images'>,
 ): Promise<{ base64: string; mimeType: string; token?: string }> => {
-  if (!baseImage.token) {
-    throw new Error('当前图像不支持继续编辑。');
-  }
+  //if (!baseImage.token) {
+  //  throw new Error('当前图像不支持继续编辑。');
+  //}
 
   const imageDataUrl = `data:${baseImage.mimeType};base64,${baseImage.base64Data}`;
 
