@@ -271,18 +271,36 @@ const extractImageFromResponse = async (
   data: ChatCompletionResponse,
 ): Promise<{ base64: string; mimeType: string; meta: ImageResponseMeta }> => {
   const message = data.choices?.[0]?.message;
+  
+  // Debug logging (remove after fixing)
+  console.log('Full message structure:', JSON.stringify(message, null, 2));
+  
   const images = message?.images;
-
   let imageUrl = normalizeImageUrl(images?.[0]);
 
+  // Try multiple fallback strategies
   if (!imageUrl && Array.isArray(message?.content)) {
     const imageContent = message.content.find((item) => item.type === 'image_url') as
       | { type: 'image_url'; image_url: string | { url?: string } }
       | undefined;
     imageUrl = normalizeImageUrl(imageContent?.image_url as ImagePayload | undefined);
   }
+  
+  // Additional fallback: check if content is a string with a data URL
+  if (!imageUrl && typeof message?.content === 'string') {
+    const dataUrlMatch = message.content.match(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/);
+    if (dataUrlMatch) {
+      imageUrl = dataUrlMatch[0];
+    }
+  }
+  
+  // Another fallback: check for url field directly in message
+  if (!imageUrl && (message as any)?.url) {
+    imageUrl = (message as any).url;
+  }
 
   if (!imageUrl) {
+    console.error('Could not find image URL in response:', data);
     throw new Error('模型响应缺少图像链接，请稍后再试。');
   }
 
@@ -301,6 +319,7 @@ const requestImageGeneration = async (
   prompt: string,
   apiKey: string,
   resultType: Extract<GenerationType, 'scene-images'>,
+  retryCount = 0,
 ): Promise<{ base64: string; mimeType: string; token?: string }> => {
   const payload: ChatCompletionPayload = {
     model: 'google/gemini-2.5-flash-image-preview',
@@ -310,12 +329,13 @@ const requestImageGeneration = async (
         content: [
           {
             type: 'text',
-            text: `${prompt}。风格：传统中国水墨画，线条洒脱，留白充足。`,
+            text: `Generate an image based on this description: ${prompt}. Style: Traditional Chinese ink wash painting with flowing lines and ample white space. IMPORTANT: You must generate and return an actual image, not just text.`,
           },
         ],
       },
     ],
     modalities: ['image', 'text'],
+    temperature: 0.7,
   };
 
   const response = await fetch(CHAT_ENDPOINT, {
@@ -330,6 +350,20 @@ const requestImageGeneration = async (
   }
 
   const data = (await response.json()) as ChatCompletionResponse;
+  
+  // Check if image exists in response
+  const message = data.choices?.[0]?.message;
+  const hasImage = message?.images?.length || 
+                   (Array.isArray(message?.content) && 
+                    message.content.some(item => item.type === 'image_url'));
+  
+  if (!hasImage && retryCount < 2) {
+    console.warn(`No image in response, retrying (attempt ${retryCount + 1})...`);
+    // Wait before retrying
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    return requestImageGeneration(prompt, apiKey, resultType, retryCount + 1);
+  }
+  
   const { base64, mimeType, meta } = await extractImageFromResponse(data);
   return { base64, mimeType, token: meta.token };
 };
@@ -467,6 +501,14 @@ export const generateIllustrations = async (
   for (let index = 0; index < scenes.length; index += 1) {
     const scene = scenes[index];
     const prompt = scene.prompt.trim();
+    
+    // Add delay between requests (except for the first one)
+    if (index > 0) {
+      console.log(`Waiting before generating image ${index + 1}...`);
+      await new Promise(resolve => setTimeout(resolve, 3000)); // 3 second delay
+    }
+    
+    console.log(`Generating image ${index + 1}/${scenes.length}...`);
     const { base64, mimeType, token } = await requestImageGeneration(prompt, apiKey, type);
 
     assets.push({
