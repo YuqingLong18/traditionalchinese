@@ -19,9 +19,10 @@ body {
 .app-header {
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 1rem;
   align-items: flex-start;
   margin-bottom: 2.5rem;
+  position: relative;
 }
 
 .app-header h1 {
@@ -35,18 +36,22 @@ body {
   color: #4b4b4b;
 }
 
-.api-key-info {
-  background: #fff;
-  padding: 1rem 1.25rem;
-  border-radius: 12px;
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
-  width: 100%;
-  max-width: 520px;
-  font-size: 0.95rem;
-  color: #1f2937;
+.status-chip {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 0.4rem 0.8rem;
+  border-radius: 999px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #0f172a;
+  background: #dcfce7;
+  border: 1px solid #86efac;
 }
 
-.api-key-info .warning {
+.status-chip.warning {
+  background: #fee2e2;
+  border-color: #fca5a5;
   color: #b91c1c;
 }
 
@@ -264,6 +269,29 @@ figcaption {
   line-height: 1.45;
 }
 
+.edit-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.edit-panel textarea {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid #d1d5db;
+  padding: 0.75rem;
+  font-family: 'Noto Serif SC', 'PingFang SC', 'Microsoft YaHei', serif;
+  font-size: 0.95rem;
+  resize: vertical;
+  min-height: 90px;
+  background: #fff;
+}
+
+.edit-panel textarea:focus {
+  outline: 2px solid #9bb9ff;
+  border-color: #7a9dff;
+}
+
 .note {
   color: #4b5563;
   margin-bottom: 0;
@@ -279,10 +307,6 @@ footer {
 @media (max-width: 768px) {
   .app-header {
     align-items: stretch;
-  }
-
-  .api-key-info {
-    max-width: 100%;
   }
 
   .sentence-grid {

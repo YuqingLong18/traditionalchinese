@@ -1,13 +1,26 @@
 import type {
   AnalysisResult,
-  AuthorBackgroundResult,
   GenerationType,
+  HistoricalContextResult,
   ImageAsset,
   ImagePrompt,
 } from '../types';
 import { countCharacters, splitSentences, toSimplifiedChinese } from './text';
 
 const CHAT_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
+
+const EMPTY_ANALYSIS: AnalysisResult = { sentences: [] };
+const EMPTY_HISTORY: HistoricalContextResult = { overview: '', recentEvents: [] };
+
+export class ModelJsonError extends Error {
+  rawContent: string;
+
+  constructor(message: string, rawContent: string) {
+    super(message);
+    this.name = 'ModelJsonError';
+    this.rawContent = rawContent;
+  }
+}
 
 type ChatMessageContent =
   | string
@@ -40,6 +53,8 @@ interface ChatCompletionResponse {
     message?: {
       content?: ChatMessageContent;
       images?: ImagePayload[];
+      token?: string;
+      edits_remaining?: number;
     };
   }>;
 }
@@ -85,10 +100,69 @@ const tryParseJson = <T>(raw: string): T => {
   return JSON.parse(candidate) as T;
 };
 
+const normalizeStringArray = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter((item) => item.length > 0);
+  }
+
+  if (typeof value === 'string') {
+    return value
+      .split(/\r?\n|[；;]+/)
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 0);
+  }
+
+  return [];
+};
+
+const normalizeAnalysisResult = (payload: AnalysisResult | undefined): AnalysisResult => {
+  if (!payload || !Array.isArray(payload.sentences)) {
+    return EMPTY_ANALYSIS;
+  }
+
+  const sentences = payload.sentences
+    .map((sentence) => {
+      const original = typeof sentence.original === 'string' ? sentence.original : '';
+      const simplified = typeof sentence.simplified === 'string' ? sentence.simplified : '';
+      const explanation = normalizeStringArray(sentence.explanation);
+
+      if (!original && !simplified && explanation.length === 0) {
+        return null;
+      }
+
+      return {
+        original,
+        simplified,
+        explanation,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+  return { sentences };
+};
+
+const normalizeHistoricalContext = (payload: HistoricalContextResult | undefined): HistoricalContextResult => {
+  if (!payload) {
+    return EMPTY_HISTORY;
+  }
+
+  const overview = typeof payload.overview === 'string' ? payload.overview : '';
+  const recentEvents = normalizeStringArray(payload.recentEvents);
+
+  return {
+    overview,
+    recentEvents,
+  };
+};
+
+
 const requestChatCompletion = async <T>(
   payload: ChatCompletionPayload,
   apiKey: string,
   resultType: GenerationType,
+  fallbackValue: T,
 ): Promise<T> => {
   const response = await fetch(CHAT_ENDPOINT, {
     method: 'POST',
@@ -104,11 +178,14 @@ const requestChatCompletion = async <T>(
   const data = (await response.json()) as ChatCompletionResponse;
   const rawContent = extractTextContent(data.choices?.[0]?.message?.content) || '';
 
+  if (!rawContent) {
+    return fallbackValue;
+  }
+
   try {
     return tryParseJson<T>(rawContent);
   } catch (error) {
-    console.error('Failed to parse JSON response.', rawContent, error);
-    throw new Error('无法解析模型回复，请稍后再试。');
+    throw new ModelJsonError('无法解析模型回复，请稍后再试。', rawContent);
   }
 };
 
@@ -186,11 +263,45 @@ const fetchImageAsBase64 = async (url: string): Promise<{ base64: string; mimeTy
   return { base64, mimeType: blob.type || 'image/png' };
 };
 
+interface ImageResponseMeta {
+  token?: string;
+}
+
+const extractImageFromResponse = async (
+  data: ChatCompletionResponse,
+): Promise<{ base64: string; mimeType: string; meta: ImageResponseMeta }> => {
+  const message = data.choices?.[0]?.message;
+  const images = message?.images;
+
+  let imageUrl = normalizeImageUrl(images?.[0]);
+
+  if (!imageUrl && Array.isArray(message?.content)) {
+    const imageContent = message.content.find((item) => item.type === 'image_url') as
+      | { type: 'image_url'; image_url: string | { url?: string } }
+      | undefined;
+    imageUrl = normalizeImageUrl(imageContent?.image_url as ImagePayload | undefined);
+  }
+
+  if (!imageUrl) {
+    throw new Error('模型响应缺少图像链接，请稍后再试。');
+  }
+
+  const { base64, mimeType } = await fetchImageAsBase64(imageUrl);
+
+  return {
+    base64,
+    mimeType,
+    meta: {
+      token: (message as { token?: string } | undefined)?.token,
+    },
+  };
+};
+
 const requestImageGeneration = async (
   prompt: string,
   apiKey: string,
-  resultType: Extract<GenerationType, 'story-images' | 'scene-images'>,
-): Promise<{ base64: string; mimeType: string }> => {
+  resultType: Extract<GenerationType, 'scene-images'>,
+): Promise<{ base64: string; mimeType: string; token?: string }> => {
   const payload: ChatCompletionPayload = {
     model: 'google/gemini-2.5-flash-image-preview',
     messages: [
@@ -219,30 +330,65 @@ const requestImageGeneration = async (
   }
 
   const data = (await response.json()) as ChatCompletionResponse;
-  const message = data.choices?.[0]?.message;
-  const images = message?.images;
+  const { base64, mimeType, meta } = await extractImageFromResponse(data);
+  return { base64, mimeType, token: meta.token };
+};
 
-  let imageUrl = normalizeImageUrl(images?.[0]);
-
-  if (!imageUrl && Array.isArray(message?.content)) {
-    const imageContent = message.content.find((item) => item.type === 'image_url') as
-      | { type: 'image_url'; image_url: string | { url?: string } }
-      | undefined;
-    imageUrl = normalizeImageUrl(imageContent?.image_url as ImagePayload | undefined);
+const requestImageEdit = async (
+  baseImage: ImageAsset,
+  editPrompt: string,
+  apiKey: string,
+  resultType: Extract<GenerationType, 'scene-images'>,
+): Promise<{ base64: string; mimeType: string; token?: string }> => {
+  if (!baseImage.token) {
+    throw new Error('当前图像不支持继续编辑。');
   }
 
-  if (!imageUrl) {
-    throw new Error('模型响应缺少图像链接，请稍后再试。');
+  const imageDataUrl = `data:${baseImage.mimeType};base64,${baseImage.base64Data}`;
+
+  const payload: ChatCompletionPayload = {
+    model: 'google/gemini-2.5-flash-image-preview',
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: `${editPrompt}。请保持水墨质感与历史氛围。`,
+          },
+          {
+            type: 'image_url',
+            image_url: {
+              url: imageDataUrl,
+            },
+          },
+        ],
+      },
+    ],
+    modalities: ['image', 'text'],
+  };
+
+  const response = await fetch(CHAT_ENDPOINT, {
+    method: 'POST',
+    headers: createHeaders(apiKey),
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`OpenRouter ${resultType} 图像编辑失败：${response.status} ${errorBody}`);
   }
 
-  return fetchImageAsBase64(imageUrl);
+  const data = (await response.json()) as ChatCompletionResponse;
+  const { base64, mimeType, meta } = await extractImageFromResponse(data);
+  return { base64, mimeType, token: meta.token };
 };
 
 const generateImagePrompts = async (
   apiKey: string,
   author: string,
   passage: string,
-  type: Extract<GenerationType, 'story-images' | 'scene-images'>,
+  type: Extract<GenerationType, 'scene-images'>,
   referenceSummary?: string,
 ): Promise<ImagePrompt[]> => {
   const simplifiedContent = toSimplifiedChinese(referenceSummary || passage);
@@ -251,14 +397,9 @@ const generateImagePrompts = async (
   const systemPrompt =
     '你是一位视觉分镜与图像提示词专家，请仅以 JSON 回复 {"scenes":[{"title":"","prompt":""},...]}。title 使用简体中文，精炼地概括画面；prompt 必须使用简体中文，约 60-120 字，描述画面主体、人物动作、环境氛围、构图与传统中国水墨画风格细节。场景数量限定为 4-8 条。';
 
-  const focus =
-    type === 'scene-images'
-      ? '请拆解原作内容，突出关键画面和情绪变化。'
-      : '请依据作者经历与历史背景，描绘故事化的关键片段。';
+  const userPrompt = `作品作者：${author || '未知'}\n原文（已转为简体便于理解）：${simplifiedContent}\n目标：生成 ${expected} 条场景描述，请突出关键画面与情绪变化。`;
 
-  const userPrompt = `作品作者：${author || '未知'}\n原文（已转为简体便于理解）：${simplifiedContent}\n目标：生成 ${expected} 条场景描述。${focus}`;
-
-  const result = await requestChatCompletion<{ scenes: ImagePrompt[] }>(
+  return requestChatCompletion<{ scenes: ImagePrompt[] }>(
     {
       model: 'google/gemini-2.5-pro',
       messages: [
@@ -271,13 +412,13 @@ const generateImagePrompts = async (
     },
     apiKey,
     'image-prompts',
-  );
-
-  if (!Array.isArray(result.scenes) || result.scenes.length === 0) {
-    throw new Error('模型未返回有效的图像场景，请尝试缩短或重写文本。');
-  }
-
-  return result.scenes.slice(0, 8);
+    { scenes: [] },
+  ).then((result) => {
+    if (!Array.isArray(result.scenes) || result.scenes.length === 0) {
+      throw new Error('模型未返回有效的图像场景，请尝试缩短或重写文本。');
+    }
+    return result.scenes.slice(0, 8);
+  });
 };
 
 export const generateAnalysis = async (
@@ -290,7 +431,7 @@ export const generateAnalysis = async (
 
   const userPrompt = `请逐句解析下列文言文：\n作者：${author || '未知'}\n文本：${passage}\n要求：\n1. original：保持原句（繁体或文言格式）；\n2. simplified：转换为现代汉语（简体），含义准确；\n3. explanation：给出关键词、典故或修辞的简要说明。`;
 
-  return requestChatCompletion<AnalysisResult>(
+  const rawResult = await requestChatCompletion<AnalysisResult>(
     {
       model: 'google/gemini-2.5-pro',
       messages: [
@@ -299,53 +440,34 @@ export const generateAnalysis = async (
       ],
       temperature: 0.4,
       top_p: 0.8,
-      max_output_tokens: 1024,
+      max_output_tokens: 2048,
     },
     apiKey,
     'analysis',
+    EMPTY_ANALYSIS,
   );
-};
 
-export const generateAuthorBackground = async (
-  apiKey: string,
-  author: string,
-  passage: string,
-): Promise<AuthorBackgroundResult> => {
-  const systemPrompt =
-    '你是一位中国古典文学教师。请用 JSON 回复 {"biography":"","keyEvents":[...],"historicalContext":[...]}，全部使用简体中文。biography 限制在 150-200 字，keyEvents 与 historicalContext 各提供 3-5 条。';
+  const normalized = normalizeAnalysisResult(rawResult);
+  if (normalized.sentences.length === 0) {
+    throw new Error('模型未返回解析内容，请稍后再试。');
+  }
 
-  const userPrompt = `请梳理作者背景与作品脉络：\n作者：${author || '未知'}\n原文摘录：${passage}\n输出须包含简介、生平大事与历史背景。`;
-
-  return requestChatCompletion<AuthorBackgroundResult>(
-    {
-      model: 'google/gemini-2.5-pro',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      temperature: 0.5,
-      top_p: 0.85,
-      max_output_tokens: 768,
-    },
-    apiKey,
-    'author',
-  );
+  return normalized;
 };
 
 export const generateIllustrations = async (
   apiKey: string,
   author: string,
   passage: string,
-  type: Extract<GenerationType, 'story-images' | 'scene-images'>,
-  referenceSummary?: string,
+  type: Extract<GenerationType, 'scene-images'>,
 ): Promise<ImageAsset[]> => {
-  const scenes = await generateImagePrompts(apiKey, author, passage, type, referenceSummary);
+  const scenes = await generateImagePrompts(apiKey, author, passage, type);
 
   const assets: ImageAsset[] = [];
   for (let index = 0; index < scenes.length; index += 1) {
     const scene = scenes[index];
     const prompt = scene.prompt.trim();
-    const { base64, mimeType } = await requestImageGeneration(prompt, apiKey, type);
+    const { base64, mimeType, token } = await requestImageGeneration(prompt, apiKey, type);
 
     assets.push({
       id: `${type}-${index + 1}`,
@@ -353,8 +475,60 @@ export const generateIllustrations = async (
       prompt,
       base64Data: base64,
       mimeType,
+      token,
     });
   }
 
   return assets;
+};
+
+export const editIllustration = async (
+  apiKey: string,
+  baseImage: ImageAsset,
+  editPrompt: string,
+  type: Extract<GenerationType, 'scene-images'>,
+): Promise<ImageAsset> => {
+  const { base64, mimeType, token } = await requestImageEdit(baseImage, editPrompt, apiKey, type);
+
+  return {
+    ...baseImage,
+    base64Data: base64,
+    mimeType,
+    prompt: `${baseImage.prompt}\n（修改：${editPrompt}）`,
+    token: token ?? baseImage.token,
+  };
+};
+
+export const generateHistoricalContext = async (
+  apiKey: string,
+  author: string,
+  passage: string,
+): Promise<HistoricalContextResult> => {
+  const systemPrompt =
+    '你是一位中国古典文学史教师，请仅以 JSON 回复 {"overview":"","recentEvents":["",...]}。overview 用简体中文概述作者生平要点（≤180 字）；recentEvents 至少 3 条，聚焦作品定稿前 1-3 年内的关键事件、社会环境或个人心境，并说明其与作品的关联。语气平实，适合课堂讲解。';
+
+  const userPrompt = `作者：${author || '未知'}\n选取作品片段：${passage}\n任务：帮助学生理解该作品的历史背景与成稿前关键事件。`;
+
+  const rawResult = await requestChatCompletion<HistoricalContextResult>(
+    {
+      model: 'google/gemini-2.5-pro',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.45,
+      top_p: 0.85,
+      max_output_tokens: 2048,
+    },
+    apiKey,
+    'history',
+    EMPTY_HISTORY,
+  );
+
+  const result = normalizeHistoricalContext(rawResult);
+  if (!result.overview && result.recentEvents.length === 0) {
+    throw new Error('模型未返回历史背景，请稍后再试。');
+  }
+
+  return result;
 };

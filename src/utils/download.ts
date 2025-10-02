@@ -1,6 +1,5 @@
 import { saveAs } from 'file-saver';
 import JSZip from 'jszip';
-import { jsPDF } from 'jspdf';
 import type { ImageAsset } from '../types';
 
 const wrapHtmlDocument = (body: string): string =>
@@ -11,30 +10,6 @@ export const downloadHtml = (filename: string, htmlContent: string): void => {
     type: 'text/html;charset=utf-8',
   });
   saveAs(blob, filename.endsWith('.html') ? filename : `${filename}.html`);
-};
-
-export const downloadPdfFromElement = async (
-  element: HTMLElement | null,
-  filename: string,
-): Promise<void> => {
-  if (!element) {
-    throw new Error('PDF export requires a rendered element.');
-  }
-
-  const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
-
-  await pdf.html(element, {
-    autoPaging: 'text',
-    margin: [32, 32, 32, 32],
-    x: 32,
-    y: 32,
-    html2canvas: {
-      scale: 0.6,
-    },
-    callback(doc) {
-      doc.save(filename.endsWith('.pdf') ? filename : `${filename}.pdf`);
-    },
-  });
 };
 
 const base64ToBlob = (base64: string, mimeType: string): Blob => {

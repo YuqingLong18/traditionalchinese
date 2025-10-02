@@ -2,34 +2,42 @@ import { Fragment, useRef, useState } from 'react';
 import './App.css';
 import type {
   AnalysisResult,
-  AuthorBackgroundResult,
+  HistoricalContextResult,
   ImageAsset,
 } from './types';
 import {
+  editIllustration,
   generateAnalysis,
-  generateAuthorBackground,
+  generateHistoricalContext,
   generateIllustrations,
+  ModelJsonError,
 } from './utils/api';
 import {
   downloadHtml,
   downloadImagesAsZip,
-  downloadPdfFromElement,
   downloadSingleImage,
 } from './utils/download';
 
+/**
+ * 页面加载后解析到的 OpenRouter API Key。任何生成操作都依赖此变量。
+ */
+const API_KEY = (import.meta.env.VITE_OPENROUTER_API_KEY ?? '').trim();
+
 type LoadingState = {
   analysis: boolean;
-  author: boolean;
-  'story-images': boolean;
+  history: boolean;
   'scene-images': boolean;
 };
 
 type ErrorState = Partial<Record<keyof LoadingState, string>>;
 
+type EditLoadingState = Record<string, boolean>;
+
+type EditValueState = Record<string, string>;
+
 const initialLoading: LoadingState = {
   analysis: false,
-  author: false,
-  'story-images': false,
+  history: false,
   'scene-images': false,
 };
 
@@ -39,16 +47,16 @@ const App = () => {
   const [author, setAuthor] = useState('');
   const [passage, setPassage] = useState('');
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
-  const [authorResult, setAuthorResult] = useState<AuthorBackgroundResult | null>(null);
-  const [storyImages, setStoryImages] = useState<ImageAsset[]>([]);
+  const [historyResult, setHistoryResult] = useState<HistoricalContextResult | null>(null);
   const [sceneImages, setSceneImages] = useState<ImageAsset[]>([]);
   const [loading, setLoading] = useState<LoadingState>(initialLoading);
   const [errors, setErrors] = useState<ErrorState>(initialErrors);
+  const [editLoading, setEditLoading] = useState<EditLoadingState>({});
+  const [editValues, setEditValues] = useState<EditValueState>({});
 
   const analysisRef = useRef<HTMLDivElement | null>(null);
-  const authorRef = useRef<HTMLDivElement | null>(null);
+  const historyRef = useRef<HTMLDivElement | null>(null);
 
-  const apiKey = (import.meta.env.VITE_OPENROUTER_API_KEY ?? '').trim();
   const passageCharacterCount = passage.replace(/\s+/g, '').length;
 
   const escapeHtml = (value: string): string =>
@@ -68,7 +76,7 @@ const App = () => {
   };
 
   const guardInputs = (requiredKey: keyof LoadingState): boolean => {
-    if (!apiKey) {
+    if (!API_KEY) {
       setErrors((prev) => ({ ...prev, [requiredKey]: '未检测到环境变量 VITE_OPENROUTER_API_KEY，请先完成配置。' }));
       return false;
     }
@@ -88,9 +96,12 @@ const App = () => {
     setLoadingFor('analysis', true);
 
     try {
-      const result = await generateAnalysis(apiKey, author.trim(), passage.trim());
+      const result = await generateAnalysis(API_KEY, author.trim(), passage.trim());
       setAnalysisResult(result);
     } catch (error) {
+      if (error instanceof ModelJsonError) {
+        console.error('模型返回内容：', error.rawContent);
+      }
       const message = error instanceof Error ? error.message : '生成过程中出现未知错误。';
       setErrors((prev) => ({ ...prev, analysis: message }));
     } finally {
@@ -98,67 +109,25 @@ const App = () => {
     }
   };
 
-  const handleAuthorBackground = async () => {
-    if (!guardInputs('author')) {
+  const handleHistory = async () => {
+    if (!guardInputs('history')) {
       return;
     }
 
-    resetErrorsFor('author');
-    setLoadingFor('author', true);
+    resetErrorsFor('history');
+    setLoadingFor('history', true);
 
     try {
-      const result = await generateAuthorBackground(apiKey, author.trim(), passage.trim());
-      setAuthorResult(result);
+      const result = await generateHistoricalContext(API_KEY, author.trim(), passage.trim());
+      setHistoryResult(result);
     } catch (error) {
+      if (error instanceof ModelJsonError) {
+        console.error('模型返回内容：', error.rawContent);
+      }
       const message = error instanceof Error ? error.message : '生成过程中出现未知错误。';
-      setErrors((prev) => ({ ...prev, author: message }));
+      setErrors((prev) => ({ ...prev, history: message }));
     } finally {
-      setLoadingFor('author', false);
-    }
-  };
-
-  const buildStorySummary = (): string => {
-    if (!authorResult) {
-      return passage;
-    }
-
-    const segments = [
-      authorResult.biography,
-      authorResult.keyEvents.join('；'),
-      authorResult.historicalContext.join('；'),
-    ];
-
-    return segments.filter(Boolean).join('。');
-  };
-
-  const handleStoryIllustrations = async () => {
-    if (!guardInputs('story-images')) {
-      return;
-    }
-
-    if (!authorResult) {
-      setErrors((prev) => ({ ...prev, 'story-images': '请先生成作者背景，再创建背景故事插图。' }));
-      return;
-    }
-
-    resetErrorsFor('story-images');
-    setLoadingFor('story-images', true);
-
-    try {
-      const summary = buildStorySummary();
-      const images = await generateIllustrations(
-        apiKey,
-        author.trim(),
-        passage.trim(),
-        'story-images',
-        summary,
-      );
-      setStoryImages(images);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '图像生成失败，请稍后再试。';
-      setErrors((prev) => ({ ...prev, 'story-images': message }));
-    } finally {
-      setLoadingFor('story-images', false);
+      setLoadingFor('history', false);
     }
   };
 
@@ -172,7 +141,7 @@ const App = () => {
 
     try {
       const images = await generateIllustrations(
-        apiKey,
+        API_KEY,
         author.trim(),
         passage.trim(),
         'scene-images',
@@ -183,6 +152,32 @@ const App = () => {
       setErrors((prev) => ({ ...prev, 'scene-images': message }));
     } finally {
       setLoadingFor('scene-images', false);
+    }
+  };
+
+  const handleEditPromptChange = (imageId: string, value: string) => {
+    setEditValues((prev) => ({ ...prev, [imageId]: value }));
+  };
+
+  const handleEditImage = async (image: ImageAsset) => {
+    const editPrompt = (editValues[image.id] || '').trim();
+    if (!editPrompt) {
+      setErrors((prev) => ({ ...prev, 'scene-images': '请输入具体的修改提示。' }));
+      return;
+    }
+
+    setEditLoading((prev) => ({ ...prev, [image.id]: true }));
+    resetErrorsFor('scene-images');
+
+    try {
+      const updated = await editIllustration(API_KEY, image, editPrompt, 'scene-images');
+      setSceneImages((prev) => prev.map((item) => (item.id === image.id ? updated : item)));
+      setEditValues((prev) => ({ ...prev, [image.id]: '' }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '图像编辑失败，请稍后再试。';
+      setErrors((prev) => ({ ...prev, 'scene-images': message }));
+    } finally {
+      setEditLoading((prev) => ({ ...prev, [image.id]: false }));
     }
   };
 
@@ -220,38 +215,6 @@ const App = () => {
     );
   };
 
-  const renderAuthorResult = () => {
-    if (!authorResult) {
-      return null;
-    }
-
-    return (
-      <div className="result-card" ref={authorRef}>
-        <h3>作者背景与创作脉络</h3>
-        <section>
-          <h4>作者简介</h4>
-          <p>{authorResult.biography}</p>
-        </section>
-        <section>
-          <h4>重要生平事件</h4>
-          <ul>
-            {authorResult.keyEvents.map((event, index) => (
-              <li key={`event-${index}`}>{event}</li>
-            ))}
-          </ul>
-        </section>
-        <section>
-          <h4>历史背景与影响</h4>
-          <ul>
-            {authorResult.historicalContext.map((context, index) => (
-              <li key={`context-${index}`}>{context}</li>
-            ))}
-          </ul>
-        </section>
-      </div>
-    );
-  };
-
   const analysisHtml = analysisResult
     ? `\n<section>\n  <h2>逐句翻译与解析</h2>\n  <table border="1" cellpadding="8" cellspacing="0">\n    <thead>\n      <tr>\n        <th>原文</th>\n        <th>现代汉语翻译</th>\n        <th>关键词与解析</th>\n      </tr>\n    </thead>\n    <tbody>\n      ${analysisResult.sentences
         .map(
@@ -262,11 +225,13 @@ const App = () => {
         .join('')}\n    </tbody>\n  </table>\n</section>`
     : '';
 
-  const authorHtml = authorResult
-    ? `\n<section>\n  <h2>作者背景与创作脉络</h2>\n  <h3>作者简介</h3>\n  <p>${escapeHtml(authorResult.biography)}</p>\n  <h3>重要生平事件</h3>\n  <ul>${authorResult.keyEvents.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>\n  <h3>历史背景与影响</h3>\n  <ul>${authorResult.historicalContext.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>\n</section>`
+  const historyHtml = historyResult
+    ? `\n<section>\n  <h2>历史背景分析</h2>\n  <p>${escapeHtml(historyResult.overview)}</p>\n  <h3>成稿前 1-3 年关键事件</h3>\n  <ul>${historyResult.recentEvents
+        .map((item) => `<li>${escapeHtml(item)}</li>`)
+        .join('')}</ul>\n</section>`
     : '';
 
-  const disableActions = !passage.trim() || !apiKey;
+  const disableActions = !passage.trim() || !API_KEY;
 
   return (
     <div className="app-shell">
@@ -275,12 +240,12 @@ const App = () => {
           <h1>传统文学教学助手</h1>
           <p>面向课堂教学的文言文翻译、解析与图像生成工具</p>
         </div>
-        <div className="api-key-info" role="status">
-          {apiKey ? (
-            <span>已检测到环境变量 VITE_OPENROUTER_API_KEY，可直接调用 OpenRouter 服务。</span>
-          ) : (
-            <span className="warning">未检测到 VITE_OPENROUTER_API_KEY，请在部署环境配置后再使用生成功能。</span>
-          )}
+        <div
+          className={`status-chip ${API_KEY ? '' : 'warning'}`}
+          role="status"
+          aria-live="polite"
+        >
+          状态：{API_KEY ? 'OK' : '服务未就绪'}
         </div>
       </header>
 
@@ -323,10 +288,10 @@ const App = () => {
           <button
             type="button"
             className="primary"
-            onClick={handleAuthorBackground}
-            disabled={disableActions || loading.author}
+            onClick={handleHistory}
+            disabled={disableActions || loading.history}
           >
-            {loading.author ? '生成中…' : '作者背景与故事'}
+            {loading.history ? '分析中…' : '历史背景分析'}
           </button>
 
           <button
@@ -339,7 +304,7 @@ const App = () => {
           </button>
         </section>
 
-        {(errors.analysis || errors.author || errors['scene-images'] || errors['story-images']) && (
+        {(errors.analysis || errors.history || errors['scene-images']) && (
           <section className="error-panel">
             {Object.entries(errors)
               .filter(([, value]) => Boolean(value))
@@ -360,87 +325,35 @@ const App = () => {
                 >
                   下载 HTML
                 </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    downloadPdfFromElement(analysisRef.current, 'translation-analysis.pdf').catch((error) =>
-                      setErrors((prev) => ({ ...prev, analysis: error.message })),
-                    )
-                  }
-                >
-                  下载 PDF
-                </button>
               </div>
             </div>
           )}
 
-          {authorResult && (
+          {historyResult && (
             <div className="result-block">
-              {renderAuthorResult()}
+              <div className="result-card" ref={historyRef}>
+                <h3>历史背景分析</h3>
+                <section>
+                  <h4>作者整体概览</h4>
+                  <p>{historyResult.overview}</p>
+                </section>
+                <section>
+                  <h4>成稿前 1-3 年关键事件</h4>
+                  <ul>
+                    {historyResult.recentEvents.map((event, index) => (
+                      <li key={`history-${index}`}>{event}</li>
+                    ))}
+                  </ul>
+                </section>
+              </div>
               <div className="export-actions">
                 <button
                   type="button"
-                  onClick={() => downloadHtml('author-background.html', authorHtml)}
+                  onClick={() => downloadHtml('historical-context.html', historyHtml)}
                 >
                   下载 HTML
                 </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    downloadPdfFromElement(authorRef.current, 'author-background.pdf').catch((error) =>
-                      setErrors((prev) => ({ ...prev, author: error.message })),
-                    )
-                  }
-                >
-                  下载 PDF
-                </button>
               </div>
-              <div className="story-illustrations-cta">
-                <p>需要进一步的故事化插图？可先生成作者背景再进行绘制。</p>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={handleStoryIllustrations}
-                  disabled={disableActions || loading['story-images']}
-                >
-                  {loading['story-images'] ? '绘制中…' : '生成背景故事插图'}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {storyImages.length > 0 && (
-            <div className="result-block">
-              <h3>背景故事插图</h3>
-              <p className="note">系统根据叙事自动确定图像数量，共 {storyImages.length} 张。</p>
-              <div className="image-grid">
-                {storyImages.map((image) => (
-                  <figure key={image.id}>
-                    <img
-                      src={`data:${image.mimeType};base64,${image.base64Data}`}
-                      alt={image.title}
-                      loading="lazy"
-                    />
-                    <figcaption>{image.title}</figcaption>
-                    <p className="prompt-text">提示词：{image.prompt}</p>
-                    <div className="export-actions">
-                      <button
-                        type="button"
-                        onClick={() => downloadSingleImage(image)}
-                      >
-                        下载此图
-                      </button>
-                    </div>
-                  </figure>
-                ))}
-              </div>
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => downloadImagesAsZip(storyImages, 'story-illustrations.zip')}
-              >
-                下载全部插图（ZIP）
-              </button>
             </div>
           )}
 
@@ -458,6 +371,22 @@ const App = () => {
                     />
                     <figcaption>{image.title}</figcaption>
                     <p className="prompt-text">提示词：{image.prompt}</p>
+                    <div className="edit-panel">
+                      <textarea
+                        placeholder="输入修改提示，例如：加入高山云海，增强远景层次。"
+                        value={editValues[image.id] || ''}
+                        onChange={(event) => handleEditPromptChange(image.id, event.target.value)}
+                        rows={3}
+                      />
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => handleEditImage(image)}
+                        disabled={editLoading[image.id]}
+                      >
+                        {editLoading[image.id] ? '编辑中…' : '提交修改'}
+                      </button>
+                    </div>
                     <div className="export-actions">
                       <button
                         type="button"

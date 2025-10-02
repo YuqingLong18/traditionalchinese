@@ -20,14 +20,19 @@ export interface ImageAsset {
   prompt: string;
   base64Data: string;
   mimeType: string;
+  token?: string;
 }
 
 export type GenerationType =
   | 'analysis'
-  | 'author'
-  | 'story-images'
+  | 'history'
   | 'scene-images'
   | 'image-prompts';
+
+export interface HistoricalContextResult {
+  overview: string;
+  recentEvents: string[];
+}
 
 export interface ImagePrompt {
   title: string;
