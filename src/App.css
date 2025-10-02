@@ -186,6 +186,37 @@ button.secondary:hover:not(:disabled) {
   margin-bottom: 0.35rem;
 }
 
+.revert-section {
+  margin: 0.5rem 0;
+  padding: 0.5rem;
+  background-color: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 4px;
+}
+
+.revert-button {
+  background-color: #ff9800;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  width: 100%;
+  margin-bottom: 0.25rem;
+}
+
+.revert-button:hover {
+  background-color: #f57c00;
+}
+
+.revert-hint {
+  font-size: 0.8rem;
+  color: #856404;
+  margin: 0;
+  text-align: center;
+}
+
 .sentence-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -323,3 +354,4 @@ footer {
     align-items: flex-start;
   }
 }
+

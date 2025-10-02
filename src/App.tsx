@@ -43,6 +43,8 @@ const initialLoading: LoadingState = {
 
 const initialErrors: ErrorState = {};
 
+type PreviousImageState = Record<string, ImageAsset>;
+
 const App = () => {
   const [author, setAuthor] = useState('');
   const [passage, setPassage] = useState('');
@@ -53,6 +55,7 @@ const App = () => {
   const [errors, setErrors] = useState<ErrorState>(initialErrors);
   const [editLoading, setEditLoading] = useState<EditLoadingState>({});
   const [editValues, setEditValues] = useState<EditValueState>({});
+  const [previousImages, setPreviousImages] = useState<PreviousImageState>({});
 
   const analysisRef = useRef<HTMLDivElement | null>(null);
   const historyRef = useRef<HTMLDivElement | null>(null);
@@ -170,6 +173,9 @@ const App = () => {
     resetErrorsFor('scene-images');
 
     try {
+      // Save the current image before editing
+      setPreviousImages((prev) => ({ ...prev, [image.id]: image }));
+      
       const updated = await editIllustration(API_KEY, image, editPrompt, 'scene-images');
       setSceneImages((prev) => prev.map((item) => (item.id === image.id ? updated : item)));
       setEditValues((prev) => ({ ...prev, [image.id]: '' }));
@@ -181,6 +187,26 @@ const App = () => {
     }
   };
 
+  const handleRevertImage = (imageId: string) => {
+  const previousImage = previousImages[imageId];
+  if (!previousImage) {
+    return;
+  }
+
+  // Restore the previous image
+  setSceneImages((prev) => prev.map((item) => (item.id === imageId ? previousImage : item)));
+  
+  // Remove from previous images tracking
+  setPreviousImages((prev) => {
+    const updated = { ...prev };
+    delete updated[imageId];
+    return updated;
+  });
+  
+  // Clear any edit prompt for this image
+  setEditValues((prev) => ({ ...prev, [imageId]: '' }));
+  };
+  
   const renderAnalysisResult = () => {
     if (!analysisResult) {
       return null;
