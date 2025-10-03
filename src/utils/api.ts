@@ -4,6 +4,7 @@ import type {
   HistoricalContextResult,
   ImageAsset,
   ImagePrompt,
+  PassageFetchResult,
 } from '../types';
 import { countCharacters, splitSentences, toSimplifiedChinese } from './text';
 
@@ -572,4 +573,46 @@ export const generateHistoricalContext = async (
   }
 
   return result;
+};
+
+export const fetchPassageText = async (
+  apiKey: string,
+  author: string,
+  workTitle: string,
+): Promise<string> => {
+  const trimmedAuthor = author.trim();
+  const trimmedWork = workTitle.trim();
+
+  if (!trimmedAuthor || !trimmedWork) {
+    throw new Error('请提供作者与作品名称后再尝试填充正文。');
+  }
+
+  const systemPrompt =
+    '你是一位严谨的古典文学资料整理者。仅以 JSON 回复 {"passage":""}，其中 passage 必须是所查询作品的原文正文，不得包含标点外的说明、注释或额外文字。不得添加标题、译文、注解或任何额外内容。';
+
+  const userPrompt = `作者：${trimmedAuthor}\n作品：${trimmedWork}\n任务：请提供该作品的全文原文，仅保留正文内容。若该作品不存在，请回复空字符串。`;
+
+  const result = await requestChatCompletion<PassageFetchResult>(
+    {
+      model: 'google/gemini-2.5-pro',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.1,
+      top_p: 0.6,
+      max_output_tokens: 2048,
+    },
+    apiKey,
+    'passage-fill',
+    { passage: '' },
+  );
+
+  const passage = typeof result.passage === 'string' ? result.passage.trim() : '';
+
+  if (!passage) {
+    throw new Error('未能找到该作品的正文，请确认作者与作品名称后再试。');
+  }
+
+  return passage;
 };

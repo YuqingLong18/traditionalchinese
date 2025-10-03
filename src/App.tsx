@@ -7,6 +7,7 @@ import type {
 } from './types';
 import {
   editIllustration,
+  fetchPassageText,
   generateAnalysis,
   generateHistoricalContext,
   generateIllustrations,
@@ -27,6 +28,7 @@ type LoadingState = {
   analysis: boolean;
   history: boolean;
   'scene-images': boolean;
+  'passage-fill': boolean;
 };
 
 type ErrorState = Partial<Record<keyof LoadingState, string>>;
@@ -39,6 +41,7 @@ const initialLoading: LoadingState = {
   analysis: false,
   history: false,
   'scene-images': false,
+  'passage-fill': false,
 };
 
 const initialErrors: ErrorState = {};
@@ -47,6 +50,7 @@ type PreviousImageState = Record<string, ImageAsset>;
 
 const App = () => {
   const [author, setAuthor] = useState('');
+  const [workTitle, setWorkTitle] = useState('');
   const [passage, setPassage] = useState('');
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [historyResult, setHistoryResult] = useState<HistoricalContextResult | null>(null);
@@ -88,6 +92,34 @@ const App = () => {
       return false;
     }
     return true;
+  };
+
+  const handleFillPassage = async () => {
+    if (!API_KEY) {
+      setErrors((prev) => ({ ...prev, 'passage-fill': '未检测到环境变量 VITE_OPENROUTER_API_KEY，请先完成配置。' }));
+      return;
+    }
+
+    if (!author.trim() || !workTitle.trim()) {
+      setErrors((prev) => ({ ...prev, 'passage-fill': '请先填写作者与作品名称。' }));
+      return;
+    }
+
+    resetErrorsFor('passage-fill');
+    setLoadingFor('passage-fill', true);
+
+    try {
+      const text = await fetchPassageText(API_KEY, author, workTitle);
+      setPassage(text);
+    } catch (error) {
+      if (error instanceof ModelJsonError) {
+        console.error('模型返回内容：', error.rawContent);
+      }
+      const message = error instanceof Error ? error.message : '未能自动填充正文，请稍后再试。';
+      setErrors((prev) => ({ ...prev, 'passage-fill': message }));
+    } finally {
+      setLoadingFor('passage-fill', false);
+    }
   };
 
   const handleAnalysis = async () => {
@@ -206,7 +238,7 @@ const App = () => {
   // Clear any edit prompt for this image
   setEditValues((prev) => ({ ...prev, [imageId]: '' }));
   };
-  
+
   const renderAnalysisResult = () => {
     if (!analysisResult) {
       return null;
@@ -277,15 +309,44 @@ const App = () => {
 
       <main>
         <section className="input-panel">
-          <div className="input-field">
-            <label htmlFor="author">作者姓名</label>
-            <input
-              id="author"
-              type="text"
-              placeholder="示例：李白"
-              value={author}
-              onChange={(event) => setAuthor(event.target.value)}
-            />
+          <div className="author-work-row">
+            <div className="input-field">
+              <label htmlFor="author">作者姓名</label>
+              <input
+                id="author"
+                type="text"
+                placeholder="示例：李白"
+                value={author}
+                onChange={(event) => setAuthor(event.target.value)}
+              />
+            </div>
+
+            <div className="input-field">
+              <label htmlFor="work-title">作品名称</label>
+              <input
+                id="work-title"
+                type="text"
+                placeholder="示例：静夜思"
+                value={workTitle}
+                onChange={(event) => setWorkTitle(event.target.value)}
+              />
+            </div>
+
+            <div className="fill-action">
+              <button
+                type="button"
+                className="secondary"
+                onClick={handleFillPassage}
+                disabled={
+                  !author.trim() ||
+                  !workTitle.trim() ||
+                  !API_KEY ||
+                  loading['passage-fill']
+                }
+              >
+                {loading['passage-fill'] ? '填充中…' : '填充正文'}
+              </button>
+            </div>
           </div>
 
           <div className="input-field">
@@ -330,7 +391,7 @@ const App = () => {
           </button>
         </section>
 
-        {(errors.analysis || errors.history || errors['scene-images']) && (
+        {(errors.analysis || errors.history || errors['scene-images'] || errors['passage-fill']) && (
           <section className="error-panel">
             {Object.entries(errors)
               .filter(([, value]) => Boolean(value))
@@ -397,6 +458,21 @@ const App = () => {
                     />
                     <figcaption>{image.title}</figcaption>
                     <p className="prompt-text">提示词：{image.prompt}</p>
+                    
+                    {/* Show revert button if there's a previous version */}
+                    {previousImages[image.id] && (
+                      <div className="revert-section">
+                        <button
+                          type="button"
+                          className="revert-button"
+                          onClick={() => handleRevertImage(image.id)}
+                        >
+                          退回修改
+                        </button>
+                        <p className="revert-hint">可恢复到修改前的版本</p>
+                      </div>
+                    )}
+                    
                     <div className="edit-panel">
                       <textarea
                         placeholder="输入修改提示，例如：加入高山云海，增强远景层次。"

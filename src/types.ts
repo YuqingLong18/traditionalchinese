@@ -27,7 +27,8 @@ export type GenerationType =
   | 'analysis'
   | 'history'
   | 'scene-images'
-  | 'image-prompts';
+  | 'image-prompts'
+  | 'passage-fill';
 
 export interface HistoricalContextResult {
   overview: string;
@@ -37,4 +38,8 @@ export interface HistoricalContextResult {
 export interface ImagePrompt {
   title: string;
   prompt: string;
+}
+
+export interface PassageFetchResult {
+  passage: string;
 }
