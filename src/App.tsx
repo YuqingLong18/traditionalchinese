@@ -2,6 +2,7 @@ import { Fragment, useRef, useState } from 'react';
 import './App.css';
 import type {
   AnalysisResult,
+  ComparativeAnalysisResult,
   HistoricalContextResult,
   ImageAsset,
 } from './types';
@@ -9,6 +10,7 @@ import {
   editIllustration,
   fetchPassageText,
   generateAnalysis,
+  generateComparativeAnalysis,
   generateHistoricalContext,
   generateIllustrations,
   ModelJsonError,
@@ -29,6 +31,7 @@ type LoadingState = {
   history: boolean;
   'scene-images': boolean;
   'passage-fill': boolean;
+  spacetime: boolean;
 };
 
 type ErrorState = Partial<Record<keyof LoadingState, string>>;
@@ -42,6 +45,7 @@ const initialLoading: LoadingState = {
   history: false,
   'scene-images': false,
   'passage-fill': false,
+  spacetime: false,
 };
 
 const initialErrors: ErrorState = {};
@@ -55,24 +59,42 @@ const App = () => {
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [historyResult, setHistoryResult] = useState<HistoricalContextResult | null>(null);
   const [sceneImages, setSceneImages] = useState<ImageAsset[]>([]);
+  const [comparativeResult, setComparativeResult] = useState<ComparativeAnalysisResult | null>(null);
   const [loading, setLoading] = useState<LoadingState>(initialLoading);
   const [errors, setErrors] = useState<ErrorState>(initialErrors);
   const [editLoading, setEditLoading] = useState<EditLoadingState>({});
   const [editValues, setEditValues] = useState<EditValueState>({});
   const [previousImages, setPreviousImages] = useState<PreviousImageState>({});
 
+  const [subjectType, setSubjectType] = useState('poet');
+  const [focalName, setFocalName] = useState('');
+  const [focalYears, setFocalYears] = useState('');
+  const [focalCivilization, setFocalCivilization] = useState('');
+  const [focalWork, setFocalWork] = useState('');
+  const [workDate, setWorkDate] = useState('');
+  const [timeWindow, setTimeWindow] = useState('50');
+  const [civilizations, setCivilizations] = useState('日本，韩国，伊斯兰世界，欧洲');
+  const [maxPerRegion, setMaxPerRegion] = useState('2');
+  const [audience, setAudience] = useState('high-school advanced humanities');
+  const [length, setLength] = useState('~900 words');
+
   const analysisRef = useRef<HTMLDivElement | null>(null);
   const historyRef = useRef<HTMLDivElement | null>(null);
 
   const passageCharacterCount = passage.replace(/\s+/g, '').length;
 
-  const escapeHtml = (value: string): string =>
-    value
+  const escapeHtml = (value: unknown): string => {
+    if (value === null || value === undefined) {
+      return '';
+    }
+    const text = typeof value === 'string' ? value : String(value);
+    return text
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  };
 
   const resetErrorsFor = (key: keyof LoadingState) => {
     setErrors((prev) => ({ ...prev, [key]: undefined }));
@@ -119,6 +141,45 @@ const App = () => {
       setErrors((prev) => ({ ...prev, 'passage-fill': message }));
     } finally {
       setLoadingFor('passage-fill', false);
+    }
+  };
+
+  const handleSpacetimeAnalysis = async () => {
+    if (!guardInputs('spacetime')) {
+      return;
+    }
+
+    if (!focalName.trim() || !focalYears.trim() || !focalCivilization.trim()) {
+      setErrors((prev) => ({ ...prev, spacetime: '请完善核心人物信息（姓名、生卒年份、文明）。' }));
+      return;
+    }
+
+    resetErrorsFor('spacetime');
+    setLoadingFor('spacetime', true);
+
+    try {
+      const result = await generateComparativeAnalysis(API_KEY, author.trim(), workTitle.trim(), passage.trim(), {
+        subjectType: subjectType.trim(),
+        focalName: focalName.trim(),
+        focalYears: focalYears.trim(),
+        focalCivilization: focalCivilization.trim(),
+        focalWork: focalWork.trim(),
+        workDate: workDate.trim(),
+        timeWindow: timeWindow.trim() || '50',
+        civilizations: civilizations.trim(),
+        maxPerRegion: maxPerRegion.trim() || '2',
+        audience: audience.trim(),
+        length: length.trim(),
+      });
+      setComparativeResult(result);
+    } catch (error) {
+      if (error instanceof ModelJsonError) {
+        console.error('模型返回内容：', error.rawContent);
+      }
+      const message = error instanceof Error ? error.message : '构建时空分析失败，请稍后再试。';
+      setErrors((prev) => ({ ...prev, spacetime: message }));
+    } finally {
+      setLoadingFor('spacetime', false);
     }
   };
 
@@ -273,6 +334,36 @@ const App = () => {
     );
   };
 
+
+  const buildComparativeHtml = (result: ComparativeAnalysisResult): string => {
+    const timelineRows = result.timelineAnchors
+      .map((item) => `<tr><td>${escapeHtml(item.year)}</td><td>${escapeHtml(item.detail)}</td></tr>`)
+      .join('');
+
+    const comparatorSections = result.comparatorShortlist
+      .map((region) => {
+        const items = region.figures
+          .map(
+            (figure) =>
+              `<li>${escapeHtml(figure.name)} — 作品：${escapeHtml(
+                figure.hallmarkWorks.length > 0 ? figure.hallmarkWorks.join('；') : '未注明作品',
+              )}。理由：${escapeHtml(figure.rationale || '未提供理由')}</li>`,
+          )
+          .join('');
+        return `<section><h4>${escapeHtml(region.region)}</h4><ul>${items}</ul></section>`;
+      })
+      .join('');
+
+    const matrixRows = result.comparisonMatrix
+      .map(
+        (row) =>
+          `<tr><td>${escapeHtml(`${row.figure}（${row.region}）`)}</td><td>${escapeHtml(row.keyWorks)}</td><td>${escapeHtml(row.formGenre)}</td><td>${escapeHtml(row.styleTechnique)}</td><td>${escapeHtml(row.themes)}</td><td>${escapeHtml(row.context)}</td><td>${escapeHtml(row.influence)}</td></tr>`,
+      )
+      .join('');
+
+    return `\\n<section>\\n  <h2>构建时空比较分析</h2>\\n  <h3>总览</h3>\\n  <p>${escapeHtml(result.executiveSnapshot)}</p>\\n  <h3>时间锚点</h3>\\n  <table border=\"1\" cellpadding=\"6\" cellspacing=\"0\">\\n    <thead><tr><th>年份</th><th>事件 / 人物 / 作品（地区）</th></tr></thead>\\n    <tbody>${timelineRows}</tbody>\\n  </table>\\n  <h3>对比名单</h3>\\n  ${comparatorSections}\\n  <h3>比较矩阵</h3>\\n  <table border=\"1\" cellpadding=\"6\" cellspacing=\"0\">\\n    <thead><tr><th>人物（地区）</th><th>代表作品</th><th>体裁</th><th>风格技法</th><th>主题</th><th>历史语境</th><th>影响 / 传播</th></tr></thead>\\n    <tbody>${matrixRows}</tbody>\\n  </table>\\n</section>`;
+  };
+
   const analysisHtml = analysisResult
     ? `\n<section>\n  <h2>逐句翻译与解析</h2>\n  <table border="1" cellpadding="8" cellspacing="0">\n    <thead>\n      <tr>\n        <th>原文</th>\n        <th>现代汉语翻译</th>\n        <th>关键词与解析</th>\n      </tr>\n    </thead>\n    <tbody>\n      ${analysisResult.sentences
         .map(
@@ -288,6 +379,8 @@ const App = () => {
         .map((item) => `<li>${escapeHtml(item)}</li>`)
         .join('')}</ul>\n</section>`
     : '';
+
+  const comparativeHtml = comparativeResult ? buildComparativeHtml(comparativeResult) : '';
 
   const disableActions = !passage.trim() || !API_KEY;
 
@@ -360,6 +453,105 @@ const App = () => {
             />
             <div className="char-counter">字数：{passageCharacterCount}</div>
           </div>
+
+          <div className="input-field">
+            <label>构建时空参数</label>
+            <div className="spacetime-grid">
+              <label className="field">
+                <span>人物类型</span>
+                <input
+                  type="text"
+                  value={subjectType}
+                  onChange={(event) => setSubjectType(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>核心人物</span>
+                <input
+                  type="text"
+                  value={focalName}
+                  placeholder="示例：李白"
+                  onChange={(event) => setFocalName(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>生卒年份</span>
+                <input
+                  type="text"
+                  value={focalYears}
+                  placeholder="示例：701–762"
+                  onChange={(event) => setFocalYears(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>文明体系</span>
+                <input
+                  type="text"
+                  value={focalCivilization}
+                  placeholder="示例：唐代中国"
+                  onChange={(event) => setFocalCivilization(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>核心作品</span>
+                <input
+                  type="text"
+                  value={focalWork}
+                  placeholder="示例：静夜思"
+                  onChange={(event) => setFocalWork(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>作品年代</span>
+                <input
+                  type="text"
+                  value={workDate}
+                  placeholder="示例：盛唐"
+                  onChange={(event) => setWorkDate(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>时间窗口（年）</span>
+                <input
+                  type="text"
+                  value={timeWindow}
+                  onChange={(event) => setTimeWindow(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>跨文化范围</span>
+                <input
+                  type="text"
+                  value={civilizations}
+                  onChange={(event) => setCivilizations(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>每区人数上限</span>
+                <input
+                  type="text"
+                  value={maxPerRegion}
+                  onChange={(event) => setMaxPerRegion(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>受众与语气</span>
+                <input
+                  type="text"
+                  value={audience}
+                  onChange={(event) => setAudience(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>目标篇幅</span>
+                <input
+                  type="text"
+                  value={length}
+                  onChange={(event) => setLength(event.target.value)}
+                />
+              </label>
+            </div>
+          </div>
         </section>
 
         <section className="actions-panel">
@@ -389,9 +581,18 @@ const App = () => {
           >
             {loading['scene-images'] ? '绘制中…' : '作品场景插图'}
           </button>
+
+          <button
+            type="button"
+            className="primary"
+            onClick={handleSpacetimeAnalysis}
+            disabled={disableActions || loading.spacetime}
+          >
+            {loading.spacetime ? '构建中…' : '构建时空'}
+          </button>
         </section>
 
-        {(errors.analysis || errors.history || errors['scene-images'] || errors['passage-fill']) && (
+        {(errors.analysis || errors.history || errors['scene-images'] || errors['passage-fill'] || errors.spacetime) && (
           <section className="error-panel">
             {Object.entries(errors)
               .filter(([, value]) => Boolean(value))
@@ -507,6 +708,96 @@ const App = () => {
               >
                 下载全部插图（ZIP）
               </button>
+            </div>
+          )}
+
+          {comparativeResult && (
+            <div className="result-block">
+              <div className="result-card">
+                <h3>构建时空比较分析</h3>
+                <section>
+                  <h4>总览</h4>
+                  <p>{comparativeResult.executiveSnapshot}</p>
+                </section>
+                <section>
+                  <h4>时间锚点（±{timeWindow} 年）</h4>
+                  <table className="timeline-table">
+                    <thead>
+                      <tr>
+                        <th>年份</th>
+                        <th>事件 / 人物 / 作品（地区）</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {comparativeResult.timelineAnchors.map((item, index) => (
+                        <tr key={`timeline-${index}`}>
+                          <td>{item.year}</td>
+                          <td>{item.detail}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </section>
+                <section>
+                  <h4>对比名单</h4>
+                  {comparativeResult.comparatorShortlist.map((region, regionIndex) => (
+                    <div key={`region-${regionIndex}`} className="comparator-region">
+                      <h5>{region.region}</h5>
+                      <ul>
+                        {region.figures.map((figure, idx) => (
+                          <li key={`figure-${regionIndex}-${idx}`}>
+                            <strong>{figure.name}</strong> — 作品：{figure.hallmarkWorks.join('；')}。理由：
+                            {figure.rationale}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </section>
+                <section>
+                  <h4>比较矩阵</h4>
+                  <div className="matrix-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>人物（地区）</th>
+                          <th>代表作品</th>
+                          <th>体裁</th>
+                          <th>风格技法</th>
+                          <th>主题</th>
+                          <th>历史语境</th>
+                          <th>影响 / 传播</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {comparativeResult.comparisonMatrix.map((row, index) => (
+                          <tr key={`matrix-${index}`}>
+                            <td>
+                              {row.figure}
+                              <br />
+                              <span className="muted">{row.region}</span>
+                            </td>
+                            <td>{row.keyWorks}</td>
+                            <td>{row.formGenre}</td>
+                            <td>{row.styleTechnique}</td>
+                            <td>{row.themes}</td>
+                            <td>{row.context}</td>
+                            <td>{row.influence}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              </div>
+              <div className="export-actions">
+                <button
+                  type="button"
+                  onClick={() => downloadHtml('comparative-analysis.html', comparativeHtml)}
+                >
+                  下载 HTML
+                </button>
+              </div>
             </div>
           )}
         </section>

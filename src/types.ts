@@ -28,7 +28,8 @@ export type GenerationType =
   | 'history'
   | 'scene-images'
   | 'image-prompts'
-  | 'passage-fill';
+  | 'passage-fill'
+  | 'comparative-analysis';
 
 export interface HistoricalContextResult {
   overview: string;
@@ -42,4 +43,38 @@ export interface ImagePrompt {
 
 export interface PassageFetchResult {
   passage: string;
+}
+
+export interface TimelineEntry {
+  year: string;
+  detail: string;
+}
+
+export interface ComparatorFigure {
+  name: string;
+  hallmarkWorks: string[];
+  rationale: string;
+}
+
+export interface ComparatorRegion {
+  region: string;
+  figures: ComparatorFigure[];
+}
+
+export interface ComparisonMatrixRow {
+  figure: string;
+  region: string;
+  keyWorks: string;
+  formGenre: string;
+  styleTechnique: string;
+  themes: string;
+  context: string;
+  influence: string;
+}
+
+export interface ComparativeAnalysisResult {
+  executiveSnapshot: string;
+  timelineAnchors: TimelineEntry[];
+  comparatorShortlist: ComparatorRegion[];
+  comparisonMatrix: ComparisonMatrixRow[];
 }

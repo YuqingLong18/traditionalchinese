@@ -1,5 +1,6 @@
 import type {
   AnalysisResult,
+  ComparativeAnalysisResult,
   GenerationType,
   HistoricalContextResult,
   ImageAsset,
@@ -12,6 +13,12 @@ const CHAT_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
 
 const EMPTY_ANALYSIS: AnalysisResult = { sentences: [] };
 const EMPTY_HISTORY: HistoricalContextResult = { overview: '', recentEvents: [] };
+const EMPTY_COMPARATIVE: ComparativeAnalysisResult = {
+  executiveSnapshot: '',
+  timelineAnchors: [],
+  comparatorShortlist: [],
+  comparisonMatrix: [],
+};
 
 export class ModelJsonError extends Error {
   rawContent: string;
@@ -155,6 +162,125 @@ const normalizeHistoricalContext = (payload: HistoricalContextResult | undefined
   return {
     overview,
     recentEvents,
+  };
+};
+
+const toNormalizedString = (value: unknown): string => {
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+  if (value === null || value === undefined) {
+    return '';
+  }
+  return String(value).trim();
+};
+
+const toNormalizedStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => toNormalizedString(item))
+    .filter((item): item is string => item.length > 0);
+};
+
+const normalizeComparativeAnalysis = (
+  payload: ComparativeAnalysisResult | undefined,
+): ComparativeAnalysisResult => {
+  if (!payload) {
+    return EMPTY_COMPARATIVE;
+  }
+
+  const timelineAnchors = Array.isArray(payload.timelineAnchors)
+    ? payload.timelineAnchors
+        .map((entry) => ({
+          year: toNormalizedString((entry as { year?: unknown }).year),
+          detail: toNormalizedString((entry as { detail?: unknown }).detail),
+        }))
+        .filter((entry) => entry.year.length > 0 || entry.detail.length > 0)
+    : [];
+
+  const comparatorShortlist = Array.isArray(payload.comparatorShortlist)
+    ? payload.comparatorShortlist
+        .map((region) => {
+          const regionName = toNormalizedString((region as { region?: unknown }).region);
+          const figuresRaw = Array.isArray((region as { figures?: unknown }).figures)
+            ? ((region as { figures: unknown[] }).figures)
+            : [];
+          const figures = figuresRaw
+            .map((figure) => {
+              const name = toNormalizedString((figure as { name?: unknown }).name);
+              const hallmarkWorks = toNormalizedStringArray((figure as { hallmarkWorks?: unknown }).hallmarkWorks);
+              const rationale = toNormalizedString((figure as { rationale?: unknown }).rationale);
+              if (!name && hallmarkWorks.length === 0 && !rationale) {
+                return null;
+              }
+              return {
+                name: name || '未注明人物',
+                hallmarkWorks,
+                rationale,
+              };
+            })
+            .filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+          if (!regionName && figures.length === 0) {
+            return null;
+          }
+
+          return {
+            region: regionName || '未注明地区',
+            figures,
+          };
+        })
+        .filter((item): item is NonNullable<typeof item> => Boolean(item))
+    : [];
+
+  const comparisonMatrix = Array.isArray(payload.comparisonMatrix)
+    ? payload.comparisonMatrix
+        .map((row) => {
+          const figure = toNormalizedString((row as { figure?: unknown }).figure);
+          const region = toNormalizedString((row as { region?: unknown }).region);
+          const keyWorks = toNormalizedString((row as { keyWorks?: unknown }).keyWorks);
+          const formGenre = toNormalizedString((row as { formGenre?: unknown }).formGenre);
+          const styleTechnique = toNormalizedString((row as { styleTechnique?: unknown }).styleTechnique);
+          const themes = toNormalizedString((row as { themes?: unknown }).themes);
+          const context = toNormalizedString((row as { context?: unknown }).context);
+          const influence = toNormalizedString((row as { influence?: unknown }).influence);
+
+          if (
+            !figure &&
+            !region &&
+            !keyWorks &&
+            !formGenre &&
+            !styleTechnique &&
+            !themes &&
+            !context &&
+            !influence
+          ) {
+            return null;
+          }
+
+          return {
+            figure: figure || '未注明人物',
+            region: region || '未注明地区',
+            keyWorks,
+            formGenre,
+            styleTechnique,
+            themes,
+            context,
+            influence,
+          };
+        })
+        .filter((item): item is NonNullable<typeof item> => Boolean(item))
+    : [];
+
+  const executiveSnapshot = toNormalizedString(payload.executiveSnapshot);
+
+  return {
+    executiveSnapshot,
+    timelineAnchors,
+    comparatorShortlist,
+    comparisonMatrix,
   };
 };
 
@@ -615,4 +741,75 @@ export const fetchPassageText = async (
   }
 
   return passage;
+};
+
+export interface ComparativeAnalysisParams {
+  subjectType: string;
+  focalName: string;
+  focalYears: string;
+  focalCivilization: string;
+  focalWork?: string;
+  workDate?: string;
+  timeWindow: string;
+  civilizations: string;
+  maxPerRegion: string;
+  audience: string;
+  length: string;
+}
+
+export const generateComparativeAnalysis = async (
+  apiKey: string,
+  author: string,
+  workTitle: string,
+  passage: string,
+  params: ComparativeAnalysisParams,
+): Promise<ComparativeAnalysisResult> => {
+  const {
+    subjectType,
+    focalName,
+    focalYears,
+    focalCivilization,
+    focalWork,
+    workDate,
+    timeWindow,
+    civilizations,
+    maxPerRegion,
+    audience,
+    length,
+  } = params;
+
+  const systemPrompt =
+    '你是一位严谨的跨文明人文研究者与课程设计者。始终以 JSON 回复，结构必须为 {"executiveSnapshot":"","timelineAnchors":[{"year":"","detail":""}],"comparatorShortlist":[{"region":"","figures":[{"name":"","hallmarkWorks":[""],"rationale":""}]}],"comparisonMatrix":[{"figure":"","region":"","keyWorks":"","formGenre":"","styleTechnique":"","themes":"","context":"","influence":""}] }。所有字段内容均使用简体中文表达，不得包含 Markdown、HTML 或额外字段。若某项信息缺失，用空字符串表示。请在文本中保留必要的方括号引用。';
+
+  const preamble = `作者：${author || '未知'}\n作品：${workTitle || '未提供'}\n全文：${passage}\n`;
+
+  const template = `角色：你是一位细致的跨文明人文研究者与课程设计者，请提供有据可查的比较结论。\n\n任务：围绕一个核心人物（及其代表作，如有）构建跨文明比较，聚焦±${timeWindow || '50'}年的同代或近代人物，比较风格/理念、体裁形式、思想主题、历史语境与影响力。\n\n输入信息：\n- 人物类型：${subjectType}\n- 核心人物：${focalName}（生卒：${focalYears}，文明：${focalCivilization}）\n- 核心作品：${focalWork || '未提供'}（年代：${workDate || '未提供'}）\n- 时间窗口：${timeWindow} 年\n- 需扫描的文明：${civilizations}\n- 每地区比较对象上限：${maxPerRegion}\n- 目标受众与语气：${audience}\n- 目标篇幅：${length}\n\n输出要求：仅填写 executiveSnapshot、timelineAnchors、comparatorShortlist、comparisonMatrix 四个板块内容；每个字段必须以简体中文描述，并在适当处加注可核查的来源（方括号）。若需扩张时间窗口，请在相关条目中注明。`;
+
+  const rawResult = await requestChatCompletion<ComparativeAnalysisResult>(
+    {
+      model: 'google/gemini-2.5-pro',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: preamble + template },
+      ],
+      temperature: 0.3,
+      top_p: 0.75,
+      max_output_tokens: 3584,
+    },
+    apiKey,
+    'comparative-analysis',
+    EMPTY_COMPARATIVE,
+  );
+
+  const normalized = normalizeComparativeAnalysis(rawResult);
+
+  if (
+    !normalized.executiveSnapshot &&
+    normalized.timelineAnchors.length === 0 &&
+    normalized.comparisonMatrix.length === 0
+  ) {
+    throw new Error('模型未返回有效的构建时空分析，请稍后再试。');
+  }
+
+  return normalized;
 };
