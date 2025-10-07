@@ -705,6 +705,8 @@ const App = () => {
         workTitle,
         passage,
         historyForApi,
+        locale,
+        trimmedMessage,
       );
 
       const responseTimestamp = Date.now();

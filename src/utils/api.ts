@@ -827,33 +827,79 @@ export const fetchPassageText = async (
   return passage;
 };
 
+const determineResponseLanguage = (
+  preferredLocale: 'zh' | 'en',
+  latestUserInput: string,
+): 'zh' | 'en' => {
+  const input = latestUserInput.trim();
+  if (!input) {
+    return preferredLocale;
+  }
+
+  const containsChinese = /[\u4e00-\u9fff]/.test(input);
+  const containsLatin = /[A-Za-z]/.test(input);
+
+  if (containsChinese && !containsLatin) {
+    return 'zh';
+  }
+
+  if (preferredLocale === 'en' && containsLatin) {
+    return 'en';
+  }
+
+  if (containsLatin && !containsChinese) {
+    return 'en';
+  }
+
+  return preferredLocale;
+};
+
 const buildAuthorPersonaPrompt = (
   author: string,
   workTitle: string,
   passage: string,
+  responseLanguage: 'zh' | 'en',
 ): string => {
-  const displayAuthor = author.trim() || '这位作者';
+  const trimmedAuthor = author.trim();
+  const displayAuthor = trimmedAuthor || (responseLanguage === 'en' ? 'the author' : '这位作者');
   const trimmedWork = workTitle.trim();
   const trimmedPassage = passage.trim();
   const snippet = trimmedPassage.slice(0, MAX_PASSAGE_SNIPPET);
   const hasMore = snippet.length < trimmedPassage.length;
 
-  const lines: string[] = [
-    `你将扮演${displayAuthor}，与学生围绕文学创作、思想、人生际遇开展对话。`,
-    '回应需结合你的一生经历、时代背景与作品主旨，辩证地讨论学生的观点。',
-    '请频繁引用你自己的诗文、尺牍或同代记载中的原句（可保留原文文言或繁体），并在需要时给予简短说明。',
-    '若学生的观点值得辩驳，请明确提出反驳并陈述理由。',
-    '整体使用简体中文表达，语气应符合作者身份的文雅与锋利。',
-    '严禁讨论与你及你作品、思想、时代无关的主题；若学生偏离，请郑重致歉并拒答，将话题引回相关领域。',
-    '单次回答建议 80-180 字，可适度分段。',
-  ];
+  const lines: string[] = [];
 
-  if (trimmedWork) {
-    lines.push(`代表作品提示：包括《${trimmedWork}》等。`);
-  }
-
-  if (snippet) {
-    lines.push(`课堂研读片段参考：${snippet}${hasMore ? '…（内容已截断）' : ''}`);
+  if (responseLanguage === 'en') {
+    lines.push(
+      `You are ${displayAuthor}, holding a conversation with students about your writing, convictions, and historical world.`,
+      'Respond in contemporary, approachable English that still reflects your personality; avoid archaic diction unless you quote directly.',
+      'Quote from your own works, letters, or contemporary records whenever helpful. Share the original line first and, if it is not already in English, follow with a concise explanation in English.',
+      'Debate the student thoughtfully when you disagree and explain your reasoning.',
+      'Stay focused on topics connected to your life, era, or literature. Decline unrelated requests politely and steer the dialogue back.',
+      'Aim for 80–180 English words per reply and break into short paragraphs for readability.',
+    );
+    if (trimmedWork) {
+      lines.push(`Key works to reference include "${trimmedWork}" and related texts.`);
+    }
+    if (snippet) {
+      lines.push(`Classroom excerpt for context: ${snippet}${hasMore ? '… (excerpt truncated)' : ''}`);
+    }
+  } else {
+    lines.push(
+      `你将扮演${displayAuthor}，与学生围绕文学创作、思想与所处时代展开对话。`,
+      '请使用现代汉语表达（避免文言句式），保持真挚而富有个人风格。',
+      '适时引用你的诗文、尺牍或同代记载中的原句，并在需要时补充简要解释。',
+      '若与学生观点存在分歧，请清晰陈述理由并展开讨论。',
+      '请紧扣与你、你的作品及时代相关的主题。若学生偏离，请郑重致歉并礼貌拒绝，随后引导回相关领域。',
+      '单次回答建议 80-180 字，可分段陈述，保持课堂友好语气。',
+      '如学生使用英文提问，你也应改用流畅的英文回应。',
+    );
+    if (trimmedWork) {
+      lines.push(`参考代表作品：包括《${trimmedWork}》等。`);
+    }
+    if (snippet) {
+      lines.push(`课堂研读片段参考：${snippet}${hasMore ? '…（内容已截断）' : ''}`);
+    }
   }
 
   return lines.join('\n');
@@ -865,8 +911,11 @@ export const continueAuthorChat = async (
   workTitle: string,
   passage: string,
   turns: AuthorChatTurn[],
+  preferredLocale: 'zh' | 'en',
+  latestUserInput: string,
 ): Promise<string> => {
-  const personaPrompt = buildAuthorPersonaPrompt(author, workTitle, passage);
+  const responseLanguage = determineResponseLanguage(preferredLocale, latestUserInput);
+  const personaPrompt = buildAuthorPersonaPrompt(author, workTitle, passage, responseLanguage);
 
   const sanitizedTurns = turns
     .map((turn) => ({ ...turn, content: turn.content.trim() }))
