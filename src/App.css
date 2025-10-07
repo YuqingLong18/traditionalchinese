@@ -25,6 +25,37 @@ body {
   position: relative;
 }
 
+.header-controls {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.language-toggle {
+  border: 1px solid #d6dbe5;
+  background: #fff;
+  padding: 0.35rem 0.9rem;
+  border-radius: 999px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #1f2937;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.language-toggle:hover {
+  background: #eef2ff;
+  border-color: #9ca3ff;
+}
+
+.language-toggle:focus {
+  outline: 2px solid #9bb9ff;
+  outline-offset: 2px;
+}
+
 .app-header h1 {
   margin: 0 0 0.5rem;
   font-size: 2.2rem;
@@ -37,9 +68,8 @@ body {
 }
 
 .status-chip {
-  position: absolute;
-  top: 0;
-  right: 0;
+  display: inline-flex;
+  align-items: center;
   padding: 0.4rem 0.8rem;
   border-radius: 999px;
   font-size: 0.9rem;
@@ -430,6 +460,13 @@ footer {
 @media (max-width: 768px) {
   .app-header {
     align-items: stretch;
+  }
+
+  .header-controls {
+    position: static;
+    align-self: stretch;
+    justify-content: flex-start;
+    margin-top: 0.5rem;
   }
 
   .author-work-row {

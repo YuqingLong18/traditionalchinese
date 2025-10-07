@@ -1,11 +1,13 @@
 import type {
   AnalysisResult,
+  AuthorChatTurn,
   ComparativeAnalysisResult,
   GenerationType,
   HistoricalContextResult,
   ImageAsset,
   ImagePrompt,
   PassageFetchResult,
+  SpacetimeSuggestionResult,
 } from '../types';
 import { countCharacters, splitSentences, toSimplifiedChinese } from './text';
 
@@ -19,6 +21,21 @@ const EMPTY_COMPARATIVE: ComparativeAnalysisResult = {
   comparatorShortlist: [],
   comparisonMatrix: [],
 };
+const EMPTY_SPACETIME: SpacetimeSuggestionResult = {
+  subjectType: '',
+  focalName: '',
+  focalYears: '',
+  focalCivilization: '',
+  focalWork: '',
+  workDate: '',
+  timeWindow: '',
+  civilizations: '',
+  maxPerRegion: '',
+  audience: '',
+  length: '',
+};
+
+const MAX_PASSAGE_SNIPPET = 800;
 
 export class ModelJsonError extends Error {
   rawContent: string;
@@ -40,7 +57,7 @@ type ChatMessageContent =
 interface ChatCompletionPayload {
   model: string;
   messages: Array<{
-    role: 'system' | 'user';
+    role: 'system' | 'user' | 'assistant';
     content: ChatMessageContent;
   }>;
   temperature?: number;
@@ -281,6 +298,28 @@ const normalizeComparativeAnalysis = (
     timelineAnchors,
     comparatorShortlist,
     comparisonMatrix,
+  };
+};
+
+const normalizeSpacetimeSuggestion = (
+  payload: SpacetimeSuggestionResult | undefined,
+): SpacetimeSuggestionResult => {
+  if (!payload) {
+    return EMPTY_SPACETIME;
+  }
+
+  return {
+    subjectType: toNormalizedString((payload as { subjectType?: unknown }).subjectType),
+    focalName: toNormalizedString((payload as { focalName?: unknown }).focalName),
+    focalYears: toNormalizedString((payload as { focalYears?: unknown }).focalYears),
+    focalCivilization: toNormalizedString((payload as { focalCivilization?: unknown }).focalCivilization),
+    focalWork: toNormalizedString((payload as { focalWork?: unknown }).focalWork),
+    workDate: toNormalizedString((payload as { workDate?: unknown }).workDate),
+    timeWindow: toNormalizedString((payload as { timeWindow?: unknown }).timeWindow),
+    civilizations: toNormalizedString((payload as { civilizations?: unknown }).civilizations),
+    maxPerRegion: toNormalizedString((payload as { maxPerRegion?: unknown }).maxPerRegion),
+    audience: toNormalizedString((payload as { audience?: unknown }).audience),
+    length: toNormalizedString((payload as { length?: unknown }).length),
   };
 };
 
@@ -701,6 +740,51 @@ export const generateHistoricalContext = async (
   return result;
 };
 
+export const generateSpacetimeSuggestions = async (
+  apiKey: string,
+  author: string,
+  workTitle: string,
+  passage: string,
+): Promise<SpacetimeSuggestionResult> => {
+  const trimmedAuthor = author.trim();
+  const trimmedWork = workTitle.trim();
+
+  const systemPrompt =
+    '你是一位跨文明文学史课程设计顾问。始终以 JSON 回复 {"subjectType":"","focalName":"","focalYears":"","focalCivilization":"","focalWork":"","workDate":"","timeWindow":"","civilizations":"","maxPerRegion":"","audience":"","length":""}。所有字段使用简体中文，若无适当建议请留空字符串。';
+
+  const contextLines = [
+    `作者：${trimmedAuthor || '未知'}`,
+    `作品：${trimmedWork || '未提供'}`,
+    `教学选段：${passage.trim()}`,
+    '任务：推测构建跨文明比较分析所需的关键参数，确保时间窗口与文明范围合理，并给出适合课堂教学的受众语气与篇幅建议。',
+  ];
+
+  const rawResult = await requestChatCompletion<SpacetimeSuggestionResult>(
+    {
+      model: 'google/gemini-2.5-pro',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: contextLines.join('\n') },
+      ],
+      temperature: 0.35,
+      top_p: 0.75,
+      max_output_tokens: 1024,
+    },
+    apiKey,
+    'spacetime-hints',
+    EMPTY_SPACETIME,
+  );
+
+  const suggestions = normalizeSpacetimeSuggestion(rawResult);
+  const hasContent = Object.values(suggestions).some((value) => value.length > 0);
+
+  if (!hasContent) {
+    throw new Error('模型未返回有效的构建参数，请稍后再试。');
+  }
+
+  return suggestions;
+};
+
 export const fetchPassageText = async (
   apiKey: string,
   author: string,
@@ -741,6 +825,87 @@ export const fetchPassageText = async (
   }
 
   return passage;
+};
+
+const buildAuthorPersonaPrompt = (
+  author: string,
+  workTitle: string,
+  passage: string,
+): string => {
+  const displayAuthor = author.trim() || '这位作者';
+  const trimmedWork = workTitle.trim();
+  const trimmedPassage = passage.trim();
+  const snippet = trimmedPassage.slice(0, MAX_PASSAGE_SNIPPET);
+  const hasMore = snippet.length < trimmedPassage.length;
+
+  const lines: string[] = [
+    `你将扮演${displayAuthor}，与学生围绕文学创作、思想、人生际遇开展对话。`,
+    '回应需结合你的一生经历、时代背景与作品主旨，辩证地讨论学生的观点。',
+    '请频繁引用你自己的诗文、尺牍或同代记载中的原句（可保留原文文言或繁体），并在需要时给予简短说明。',
+    '若学生的观点值得辩驳，请明确提出反驳并陈述理由。',
+    '整体使用简体中文表达，语气应符合作者身份的文雅与锋利。',
+    '严禁讨论与你及你作品、思想、时代无关的主题；若学生偏离，请郑重致歉并拒答，将话题引回相关领域。',
+    '单次回答建议 80-180 字，可适度分段。',
+  ];
+
+  if (trimmedWork) {
+    lines.push(`代表作品提示：包括《${trimmedWork}》等。`);
+  }
+
+  if (snippet) {
+    lines.push(`课堂研读片段参考：${snippet}${hasMore ? '…（内容已截断）' : ''}`);
+  }
+
+  return lines.join('\n');
+};
+
+export const continueAuthorChat = async (
+  apiKey: string,
+  author: string,
+  workTitle: string,
+  passage: string,
+  turns: AuthorChatTurn[],
+): Promise<string> => {
+  const personaPrompt = buildAuthorPersonaPrompt(author, workTitle, passage);
+
+  const sanitizedTurns = turns
+    .map((turn) => ({ ...turn, content: turn.content.trim() }))
+    .filter((turn) => turn.content.length > 0);
+
+  if (sanitizedTurns.length === 0) {
+    throw new Error('请先提出想要讨论的问题。');
+  }
+
+  const payload: ChatCompletionPayload = {
+    model: 'google/gemini-2.5-pro',
+    messages: [
+      { role: 'system', content: personaPrompt },
+      ...sanitizedTurns.map((turn) => ({ role: turn.role, content: turn.content })),
+    ],
+    temperature: 0.55,
+    top_p: 0.8,
+    max_output_tokens: 1024,
+  };
+
+  const response = await fetch(CHAT_ENDPOINT, {
+    method: 'POST',
+    headers: createHeaders(apiKey),
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`OpenRouter author-chat 请求失败：${response.status} ${errorBody}`);
+  }
+
+  const data = (await response.json()) as ChatCompletionResponse;
+  const reply = extractTextContent(data.choices?.[0]?.message?.content)?.trim();
+
+  if (!reply) {
+    throw new Error('作者暂时没有回应，请稍后再试。');
+  }
+
+  return reply;
 };
 
 export interface ComparativeAnalysisParams {

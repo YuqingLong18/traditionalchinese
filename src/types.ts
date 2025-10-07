@@ -29,7 +29,9 @@ export type GenerationType =
   | 'scene-images'
   | 'image-prompts'
   | 'passage-fill'
-  | 'comparative-analysis';
+  | 'comparative-analysis'
+  | 'author-chat'
+  | 'spacetime-hints';
 
 export interface HistoricalContextResult {
   overview: string;
@@ -77,4 +79,32 @@ export interface ComparativeAnalysisResult {
   timelineAnchors: TimelineEntry[];
   comparatorShortlist: ComparatorRegion[];
   comparisonMatrix: ComparisonMatrixRow[];
+}
+
+export interface SpacetimeSuggestionResult {
+  subjectType: string;
+  focalName: string;
+  focalYears: string;
+  focalCivilization: string;
+  focalWork: string;
+  workDate: string;
+  timeWindow: string;
+  civilizations: string;
+  maxPerRegion: string;
+  audience: string;
+  length: string;
+}
+
+export type AuthorChatRole = 'user' | 'author';
+
+export interface AuthorChatMessage {
+  id: string;
+  role: AuthorChatRole;
+  content: string;
+  timestamp: number;
+}
+
+export interface AuthorChatTurn {
+  role: 'user' | 'assistant';
+  content: string;
 }
